@@ -27,7 +27,7 @@ char *input_path;
 size_t input_size;
 size_t input_limit;
 unsigned char *input;
-uint32_t domid, forkdomid;
+uint32_t domid, oracle_forkdomid, forkdomid;
 bool afl;
 bool parent_ready;
 bool crash;
@@ -38,7 +38,7 @@ addr_t address;
 unsigned long limit;
 
 xc_interface *xc;
-vmi_instance_t parent_vmi, vmi;
+vmi_instance_t parent_vmi, oracle_vmi, vmi;
 os_t os;
 addr_t target_pagetable;
 addr_t start_rip;

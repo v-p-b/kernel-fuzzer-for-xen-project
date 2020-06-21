@@ -279,6 +279,20 @@ int main(int argc, char** argv)
         goto done;
     }
 
+    if ( !fork_vm(domid, &oracle_forkdomid) )
+    {
+        fprintf(stderr, "Oracle domain fork failed\n");
+        goto done;
+    }
+    if ( !setup_vmi(&oracle_vmi, NULL, oracle_forkdomid, NULL, true, false) )
+    {
+        fprintf(stderr, "Unable to start VMI on oracle domain\n");
+        goto done;
+    }
+
+    // TODO Setup oracle here 
+    
+    domid = oracle_forkdomid;
     if ( !fork_vm(domid, &forkdomid) )
     {
         fprintf(stderr, "Domain fork failed\n");
@@ -348,6 +362,8 @@ done:
     }
     if ( forkdomid )
         xc_domain_destroy(xc, forkdomid);
+    if ( oracle_forkdomid )
+        xc_domain_destroy(xc, oracle_forkdomid);
     xc_interface_close(xc);
     cs_close(&cs_handle);
     if ( input_file )
