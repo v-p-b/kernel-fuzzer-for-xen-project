@@ -21,33 +21,37 @@ static unsigned char *afl_area_ptr;
 static unsigned char *afl_oracle_area_ptr;
 static unsigned int afl_inst_rms = MAP_SIZE;
 static char *id_str;
-unsigned long prev_loc;
 
 void afl_rewind(unsigned long start)
 {
-    prev_loc  = (start >> 4) ^ (start << 8);
+    /*prev_loc  = (start >> 4) ^ (start << 8);
     prev_loc &= MAP_SIZE - 1;
-    prev_loc >>= 1;
+    prev_loc >>= 1;*/
+    return;
 }
 
-unsigned char afl_instrument_location(unsigned long cur_loc)
+unsigned char afl_instrument_location(unsigned long cur_loc, uint64_t from)
 {
-    if ( !id_str )
-        return 255;
-
-    // Not tracking edges yet
-    // cur_loc  = (cur_loc >> 4) ^ (cur_loc << 8);
+    cur_loc  = (cur_loc >> 4) ^ (cur_loc << 8);
     cur_loc &= MAP_SIZE - 1;
 
-    // Tracking vertices only
-    // afl_area_ptr[cur_loc ^ prev_loc]++;
-    afl_area_ptr[cur_loc]++;
-    //prev_loc = cur_loc >> 1;
+    unsigned long prev_loc = from; // Truncation!
+    prev_loc  = (prev_loc >> 4) ^ (prev_loc << 8);
+    prev_loc &= MAP_SIZE - 1;
+    prev_loc = prev_loc >> 1;
+    
+    //printf("Cur loc: %lx Prev loc: %lx\n", cur_loc, prev_loc);
+    if ( !id_str )
+    {
+        return 255;
+    }
+ 
+    afl_area_ptr[cur_loc ^ prev_loc]++;
 
     // Can't read proper values from shared memory
-    afl_oracle_area_ptr[cur_loc]++;
+    afl_oracle_area_ptr[cur_loc ^ prev_loc]++;
 
-    return afl_oracle_area_ptr[cur_loc];
+    return afl_oracle_area_ptr[cur_loc ^ prev_loc];
 }
 
 void afl_setup(void) {
@@ -86,7 +90,7 @@ void afl_setup(void) {
     if (write(FORKSRV_FD + 1, tmp, 4) == 4)
     {
         afl = true;
-        afl_instrument_location(start_rip);
+        afl_instrument_location(start_rip, 0);
     }
 }
 

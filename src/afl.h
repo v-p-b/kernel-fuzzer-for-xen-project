@@ -5,6 +5,6 @@ void afl_setup(void);
 void afl_rewind(unsigned long start);
 void afl_wait(void);
 void afl_report(bool crash);
-unsigned char afl_instrument_location(unsigned long cur_loc);
+unsigned char afl_instrument_location(unsigned long cur_loc, uint64_t from);
 
 #endif

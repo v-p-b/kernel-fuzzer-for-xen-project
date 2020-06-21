@@ -182,7 +182,30 @@ static event_response_t tracer_cb(vmi_instance_t vmi, vmi_event_t *event)
         return VMI_EVENT_RESPONSE_SET_REGISTERS;
     }
 
-    unsigned char hit_count = afl_instrument_location(event->x86_regs->rip);
+    /* Fetching LBR */
+    uint32_t count, tos, lbr_loop;
+    uint64_t from, to;
+
+    xc_monitor_get_lbr(xc, forkdomid, event->vcpu_id, ~0, &count, &tos, &from, &to);
+    //printf("\t VM trapped to Xen with INT3 @ 0x%lx\n", event->interrupt_event.gla);
+    //printf("\t LBR size: %u TOS: %u\n", count, tos);
+
+    lbr_loop = tos + 1;
+    do
+    {
+        if ( lbr_loop >= count )
+            lbr_loop = 0;
+
+        xc_monitor_get_lbr(xc, forkdomid, event->vcpu_id, lbr_loop, &count, &tos, &from, &to);
+        //printf("\t LBR %u: 0x%lx -> 0x%lx\n", lbr_loop, from, to);
+        if ( lbr_loop == tos )
+            break;
+
+        lbr_loop++;
+
+    } while(1);
+
+    unsigned char hit_count = afl_instrument_location(event->x86_regs->rip, from);
 
     if ( VMI_EVENT_SINGLESTEP == event->type )
     {
@@ -362,6 +385,7 @@ bool setup_trace(vmi_instance_t vmi)
             return false;
     }
 
+    xc_monitor_enable_lbr(xc, forkdomid);
     if ( debug ) printf("Setup trace finished\n");
     return true;
 }
