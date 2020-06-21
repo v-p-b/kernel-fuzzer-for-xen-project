@@ -1,4 +1,5 @@
 #include "private.h"
+#include "cfs.h"
 
 /*
  * List all sink points here. When the kernel executes any of these functions
@@ -224,13 +225,10 @@ static event_response_t tracer_cb(vmi_instance_t vmi, vmi_event_t *event)
         return VMI_EVENT_RESPONSE_SET_REGISTERS;
     }
 
-    afl_instrument_location(event->x86_regs->rip);
+    unsigned char hit_count = afl_instrument_location(event->x86_regs->rip);
 
     if ( VMI_EVENT_SINGLESTEP == event->type )
     {
-        if ( next_cf_insn(vmi, event->x86_regs->cr3, event->x86_regs->rip) )
-            breakpoint_next_cf(vmi);
-
         return VMI_EVENT_RESPONSE_TOGGLE_SINGLESTEP;
     }
 
@@ -242,12 +240,23 @@ static event_response_t tracer_cb(vmi_instance_t vmi, vmi_event_t *event)
     {
         event->interrupt_event.reinject = 0;
 
+        size_t expected_bp;
+        bool expected_found=false;
+        for (size_t i = 0; i < CF_COUNT; i++)
+        {
+            if (cf_vaddrs[i] == event->x86_regs->rip){
+                expected_bp = i;
+                expected_found = true;
+                break;
+            }
+        }
+
         /*
          * This is not a SINK breakpoint and it's not the next CF either.
          * Need to reinject if we are using CPUID as the harness.
          * Otherwise this is the end harness.
          */
-        if ( event->x86_regs->rip != next_cf_vaddr )
+        if ( !expected_found )
         {
             if ( harness_cpuid )
             {
@@ -264,12 +273,16 @@ static event_response_t tracer_cb(vmi_instance_t vmi, vmi_event_t *event)
         }
 
         /* We are at the expected breakpointed CF instruction */
-        vmi_write_pa(vmi, next_cf_paddr, 1, &cf_backup, NULL);
+        vmi_write_pa(vmi, cf_target_paddrs[expected_bp], 1, &cf_backups[expected_bp], NULL);
+        if ( hit_count > MAX_HIT_COUNT){
+            vmi_write_pa(oracle_vmi, cf_paddrs[expected_bp], 1, &cf_backups[expected_bp], NULL);        
+        }
+
 
         tracer_counter++;
 
         if ( limit == ~0ul || tracer_counter < limit )
-            return VMI_EVENT_RESPONSE_TOGGLE_SINGLESTEP;
+            return 0;
 
         if ( debug ) printf("Hit the tracer limit: %lu\n", tracer_counter);
         vmi_pause_vm(vmi);
@@ -312,6 +325,64 @@ void clear_sinks(vmi_instance_t vmi)
         vmi_write_pa(vmi, sink_paddr[c], 1, &sink_backup[c], NULL);
 }
 
+void setup_target_cf_paddrs(vmi_instance_t vmi)
+{
+    for (size_t i = 0; i < CF_COUNT; i++)
+    {
+        if ( cf_vaddrs[i] == 0)
+        {
+            continue;
+        }
+        if (VMI_FAILURE == vmi_pagetable_lookup(vmi, target_pagetable, cf_vaddrs[i], &cf_target_paddrs[i]))
+        {
+            if ( debug ) printf("SETUP TAGET CFs Failed to lookup instruction PA for 0x%lx with PT 0x%lx\n", cf_vaddrs[i], target_pagetable);
+            cf_vaddrs[i] = 0;
+        }        
+    }
+}
+
+bool set_cfs(vmi_instance_t vmi)
+{
+    if (!cf_initialized)
+    {
+        for (size_t i = 0; i < CF_COUNT; i++)
+        {
+            if ( cf_vaddrs[i] == 0)
+            {
+                continue;
+            }
+            if ( VMI_FAILURE == vmi_pagetable_lookup(vmi, target_pagetable, cf_vaddrs[i], &cf_paddrs[i]) )
+            {
+                if ( debug ) printf("ST Failed to lookup instruction PA for 0x%lx with PT 0x%lx\n", cf_vaddrs[i], target_pagetable);
+                cf_vaddrs[i] = 0;
+                continue;
+            }
+             if ( VMI_SUCCESS != vmi_read_pa(vmi, cf_paddrs[i], 1, &cf_backups[i], NULL) )
+            {
+                if ( debug ) printf("ST Failed to backup %lx %lx\n", cf_vaddrs[i], cf_paddrs[i]);
+                return false;
+            }
+        }
+        cf_initialized = true;
+    }
+    
+    for ( size_t i = 0; i < CF_COUNT; i++ )
+    {
+        if ( cf_vaddrs[i] == 0 )
+        {
+            continue;        
+        }
+
+        if ( VMI_SUCCESS != vmi_write_pa(vmi, cf_paddrs[i], 1, &cc, NULL) )
+        {
+            if ( debug ) printf("ST Failed to set BP %lx %lx\n", cf_vaddrs[i], cf_paddrs[i]);
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool setup_trace(vmi_instance_t vmi)
 {
     if ( debug ) printf("Setup trace\n");
@@ -345,13 +416,6 @@ bool start_trace(vmi_instance_t vmi, addr_t address) {
     next_cf_paddr = 0;
     tracer_counter = 0;
 
-    if ( !next_cf_insn(vmi, target_pagetable, address) )
-    {
-        if ( debug ) printf("Failed starting trace from 0x%lx\n", address);
-        return false;
-    }
-
-    breakpoint_next_cf(vmi);
     return true;
 }
 

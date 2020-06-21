@@ -1,0 +1,14 @@
+#define CF_COUNT 6
+#define MAX_HIT_COUNT 6
+
+addr_t cf_vaddrs[6]={0x401549,
+0x401588,
+0x401596,
+0x4015a4,
+0x4015b2,
+0x4015b6};
+
+addr_t cf_paddrs[6]={0};
+addr_t cf_target_paddrs[6]={0};
+uint8_t cf_backups[6];
+bool cf_initialized=false;

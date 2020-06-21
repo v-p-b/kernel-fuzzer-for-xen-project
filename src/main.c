@@ -57,6 +57,7 @@ static bool make_fork_ready()
         return false;
     }
 
+    setup_target_cf_paddrs(vmi);
     setup_trace(vmi);
 
     if ( debug ) printf("Fork ready\n");
@@ -290,8 +291,12 @@ int main(int argc, char** argv)
         goto done;
     }
 
-    // TODO Setup oracle here 
-    
+    if ( !set_cfs(oracle_vmi) )
+    {
+        fprintf(stderr, "Failed to set up control-flow breakpoints!\n");
+        goto done;
+    }
+
     domid = oracle_forkdomid;
     if ( !fork_vm(domid, &forkdomid) )
     {
