@@ -3,11 +3,11 @@
 
 #include "forkvm.h"
 
-extern uint32_t domid, forkdomid;
+// extern uint32_t domid, forkdomid;
 extern int vcpus;
 extern xc_interface *xc;
 
-bool fork_vm(void)
+bool fork_vm(uint32_t my_domid, uint32_t *my_forkdomid)
 {
     int rc;
     struct xen_domctl_createdomain create = {0};
@@ -21,12 +21,12 @@ bool fork_vm(void)
     create.max_grant_frames = LIBXL_MAX_GRANT_FRAMES_DEFAULT;
     create.max_maptrack_frames = LIBXL_MAX_MAPTRACK_FRAMES_DEFAULT;
 
-    if ( (rc = xc_domain_create(xc, &forkdomid, &create)) )
+    if ( (rc = xc_domain_create(xc, my_forkdomid, &create)) )
         return false;
 
-    if ( (rc = xc_memshr_fork(xc, domid, forkdomid, true, true)) )
+    if ( (rc = xc_memshr_fork(xc, my_domid, *my_forkdomid, true, true)) )
     {
-        xc_domain_destroy(xc, forkdomid);
+        xc_domain_destroy(xc, *my_forkdomid);
         return false;
     }
 

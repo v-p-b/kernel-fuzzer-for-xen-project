@@ -279,7 +279,7 @@ int main(int argc, char** argv)
         goto done;
     }
 
-    if ( !fork_vm() )
+    if ( !fork_vm(domid, &forkdomid) )
     {
         fprintf(stderr, "Domain fork failed\n");
         goto done;
@@ -332,7 +332,7 @@ int main(int argc, char** argv)
             iter = 0;
             forkdomid = 0;
 
-            if ( fork_vm() )
+            if ( fork_vm(domid, &forkdomid) )
                 make_fork_ready();
         }
     }
