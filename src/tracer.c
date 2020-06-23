@@ -292,18 +292,25 @@ static event_response_t tracer_cb(vmi_instance_t vmi, vmi_event_t *event)
         vmi_write_pa(vmi, meminfo->target_paddr, 1, &(meminfo->backup), NULL);
 
         GList* iterator;
+        bool filled = true;
+        bool found = false;
+
         for ( iterator = src_list ; iterator ; iterator = iterator->next )
         {
             SrcEdge* data = (SrcEdge*)iterator->data;
             if (data->src == (from & 0xffffffff) /*TODO bitness!*/)
             {
-                if ( data->hitcount++ > MAX_HIT_COUNT)
-                {
-                    vmi_write_pa(oracle_vmi, meminfo->oracle_paddr, 1, &(meminfo->backup), NULL);        
-                }
+                data->hitcount++;
+                found = true;
                 if ( debug ) printf("\tSource edge hit count: %d\n", data->hitcount);
-                break;        
             }
+            if (data->hitcount < MAX_HIT_COUNT) filled = false;
+            if (!filled && found) break;
+        }
+
+        if (filled){
+            if ( debug ) printf("Removing BP at %lx\n", event->x86_regs->rip);
+            vmi_write_pa(oracle_vmi, meminfo->oracle_paddr, 1, &(meminfo->backup), NULL);
         }
 
         tracer_counter++;
