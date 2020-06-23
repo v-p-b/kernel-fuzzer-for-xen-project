@@ -29,6 +29,42 @@ static uint8_t cf_backup;
 
 static vmi_event_t singlestep_event, cc_event, cpuid_event;
 
+bool read_control_flow(void)
+{
+    json_t* json_input = json_load_file("/tmp/cf.json", 0, NULL);
+    if (!json_input){
+        if ( debug ) printf("[CF] Unable load control flow information!\n");
+        return false;
+    }
+    cf_map = g_hash_table_new(g_direct_hash, g_direct_equal);
+    meminfo_map = g_hash_table_new(g_direct_hash, g_direct_equal);
+    void* iter = json_object_iter( json_input );
+    while (iter)
+    {
+        const char* key = json_object_iter_key( iter );
+        json_t* value = json_object_iter_value( iter );
+        uint64_t addr = strtoll(key, NULL, 16);
+        GList* src_list = NULL;
+        for (size_t i=0; i < json_array_size(value); i++)
+        {
+            SrcEdge* edge = (SrcEdge*)g_new(SrcEdge, 1);
+            edge->src = json_integer_value( json_array_get(value, i) );
+            edge->hitcount = 0;
+            src_list = g_list_append(src_list, edge);
+        }
+        g_hash_table_insert(cf_map, (gpointer) addr, src_list);
+        if ( debug ) printf("Inserted %d sources for %lx\n", g_list_length(src_list) ,addr);
+
+        MemInfo* meminfo = (MemInfo*)g_new(MemInfo, 1);
+        meminfo->oracle_paddr = 0;
+        meminfo->target_paddr = 0;
+        g_hash_table_insert(meminfo_map, (gpointer) addr, meminfo);
+        
+        iter = json_object_iter_next(json_input, iter);
+    }
+    return true;
+}
+
 static void breakpoint_next_cf(vmi_instance_t vmi)
 {
     if ( VMI_SUCCESS == vmi_read_pa(vmi, next_cf_paddr, 1, &cf_backup, NULL) &&
@@ -197,7 +233,7 @@ static event_response_t tracer_cb(vmi_instance_t vmi, vmi_event_t *event)
             lbr_loop = 0;
 
         xc_monitor_get_lbr(xc, forkdomid, event->vcpu_id, lbr_loop, &count, &tos, &from, &to);
-        //printf("\t LBR %u: 0x%lx -> 0x%lx\n", lbr_loop, from, to);
+        if ( debug ) printf("\t LBR %u: 0x%lx -> 0x%lx\n", lbr_loop, from, to);
         if ( lbr_loop == tos )
             break;
 
@@ -205,7 +241,7 @@ static event_response_t tracer_cb(vmi_instance_t vmi, vmi_event_t *event)
 
     } while(1);
 
-    unsigned char hit_count = afl_instrument_location(event->x86_regs->rip, from);
+    afl_instrument_location(event->x86_regs->rip, from);
 
     if ( VMI_EVENT_SINGLESTEP == event->type )
     {
@@ -219,18 +255,18 @@ static event_response_t tracer_cb(vmi_instance_t vmi, vmi_event_t *event)
     if ( VMI_EVENT_INTERRUPT == event->type )
     {
         event->interrupt_event.reinject = 0;
+        MemInfo* meminfo = g_hash_table_lookup(meminfo_map, event->x86_regs->rip);
+        GList* src_list = g_hash_table_lookup(cf_map, event->x86_regs->rip);
 
-        size_t expected_bp;
-        bool expected_found=false;
-        for (size_t i = 0; i < CF_COUNT; i++)
+        bool expected_found = false;
+        if (meminfo && meminfo->oracle_paddr != 0)
         {
-            if (cf_vaddrs[i] == event->x86_regs->rip){
-                expected_bp = i;
-                expected_found = true;
-                break;
-            }
+            expected_found = true;
+            if ( debug ) printf("Found meminfo for %lx\n", event->x86_regs->rip);        
+        }else{
+            if ( debug ) printf("Meminfo not found for %lx\n", event->x86_regs->rip);        
         }
-
+        
         /*
          * This is not a SINK breakpoint and it's not the next CF either.
          * Need to reinject if we are using CPUID as the harness.
@@ -253,11 +289,22 @@ static event_response_t tracer_cb(vmi_instance_t vmi, vmi_event_t *event)
         }
 
         /* We are at the expected breakpointed CF instruction */
-        vmi_write_pa(vmi, cf_target_paddrs[expected_bp], 1, &cf_backups[expected_bp], NULL);
-        if ( hit_count > MAX_HIT_COUNT){
-            vmi_write_pa(oracle_vmi, cf_paddrs[expected_bp], 1, &cf_backups[expected_bp], NULL);        
-        }
+        vmi_write_pa(vmi, meminfo->target_paddr, 1, &(meminfo->backup), NULL);
 
+        GList* iterator;
+        for ( iterator = src_list ; iterator ; iterator = iterator->next )
+        {
+            SrcEdge* data = (SrcEdge*)iterator->data;
+            if (data->src == (from & 0xffffffff) /*TODO bitness!*/)
+            {
+                if ( data->hitcount++ > MAX_HIT_COUNT)
+                {
+                    vmi_write_pa(oracle_vmi, meminfo->oracle_paddr, 1, &(meminfo->backup), NULL);        
+                }
+                if ( debug ) printf("\tSource edge hit count: %d\n", data->hitcount);
+                break;        
+            }
+        }
 
         tracer_counter++;
 
@@ -305,61 +352,77 @@ void clear_sinks(vmi_instance_t vmi)
         vmi_write_pa(vmi, sink_paddr[c], 1, &sink_backup[c], NULL);
 }
 
+/*
+Looks up and saves physical addresses corresponding to BP locations in the target fork
+*/
 void setup_target_cf_paddrs(vmi_instance_t vmi)
 {
-    for (size_t i = 0; i < CF_COUNT; i++)
+    GHashTableIter iter;
+    gpointer key;
+    MemInfo* value;
+    g_hash_table_iter_init(&iter, meminfo_map);
+    while (g_hash_table_iter_next (&iter, &key, &value))
     {
-        if ( cf_vaddrs[i] == 0)
+
+        if (VMI_FAILURE == vmi_pagetable_lookup(vmi, target_pagetable, (addr_t)key, &(value->target_paddr) ))
         {
-            continue;
+                
+            if ( debug ) printf("SETUP TAGET CFs Failed to lookup instruction PA for 0x%lx with PT 0x%lx\n", (addr_t)key, target_pagetable);
+            value->target_paddr = 0;
         }
-        if (VMI_FAILURE == vmi_pagetable_lookup(vmi, target_pagetable, cf_vaddrs[i], &cf_target_paddrs[i]))
-        {
-            if ( debug ) printf("SETUP TAGET CFs Failed to lookup instruction PA for 0x%lx with PT 0x%lx\n", cf_vaddrs[i], target_pagetable);
-            cf_vaddrs[i] = 0;
-        }        
     }
 }
 
+/*
+Looks up and saves physical addresses corresponding to BP locations in the oracle fork
+
+Sets BPs and saves backup bytes
+*/
 bool set_cfs(vmi_instance_t vmi)
-{
+{ 
+    GHashTableIter iter;
+    gpointer key;
+    MemInfo* value;
+
     if (!cf_initialized)
     {
-        for (size_t i = 0; i < CF_COUNT; i++)
+        if ( !read_control_flow() )
         {
-            if ( cf_vaddrs[i] == 0)
+            return false;        
+        }
+        g_hash_table_iter_init(&iter, meminfo_map);
+        while (g_hash_table_iter_next (&iter, &key, &value))
+        {        
+            if (VMI_FAILURE == vmi_pagetable_lookup(vmi, target_pagetable, (addr_t)key, &(value->oracle_paddr) ))
             {
-                continue;
+                if ( debug ) printf("ST Failed to lookup instruction PA for 0x%lx with PT 0x%lx\n", (addr_t)key, target_pagetable);
+                value->oracle_paddr = 0;
             }
-            if ( VMI_FAILURE == vmi_pagetable_lookup(vmi, target_pagetable, cf_vaddrs[i], &cf_paddrs[i]) )
+            if ( VMI_SUCCESS != vmi_read_pa(vmi, value->oracle_paddr, 1, &(value->backup), NULL) )
             {
-                if ( debug ) printf("ST Failed to lookup instruction PA for 0x%lx with PT 0x%lx\n", cf_vaddrs[i], target_pagetable);
-                cf_vaddrs[i] = 0;
-                continue;
-            }
-             if ( VMI_SUCCESS != vmi_read_pa(vmi, cf_paddrs[i], 1, &cf_backups[i], NULL) )
-            {
-                if ( debug ) printf("ST Failed to backup %lx %lx\n", cf_vaddrs[i], cf_paddrs[i]);
+                if ( debug ) printf("ST Failed to backup %lx %lx\n", (addr_t)key, value->oracle_paddr);
                 return false;
             }
         }
+ 
         cf_initialized = true;
     }
     
-    for ( size_t i = 0; i < CF_COUNT; i++ )
+    // Setting breakpoints
+    g_hash_table_iter_init(&iter, meminfo_map);
+    while (g_hash_table_iter_next (&iter, &key, &value))
     {
-        if ( cf_vaddrs[i] == 0 )
+        if ( value->oracle_paddr == 0 )
         {
-            continue;        
+            continue;
         }
 
-        if ( VMI_SUCCESS != vmi_write_pa(vmi, cf_paddrs[i], 1, &cc, NULL) )
+        if ( VMI_SUCCESS != vmi_write_pa(vmi, value->oracle_paddr, 1, &cc, NULL) )
         {
-            if ( debug ) printf("ST Failed to set BP %lx %lx\n", cf_vaddrs[i], cf_paddrs[i]);
+            if ( debug ) printf("ST Failed to set BP %lx %lx\n", (addr_t)key, value->oracle_paddr);
             return false;
         }
     }
-
     return true;
 }
 

@@ -1,6 +1,8 @@
 #ifndef TRACER_H
 #define TRACER_H
 
+#include <glib.h>
+#include <jansson.h>
 #include "private.h"
 
 bool setup_sinks(vmi_instance_t vmi);

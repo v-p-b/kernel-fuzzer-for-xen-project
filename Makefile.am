@@ -12,11 +12,15 @@ kfx_SOURCES = src/main.c src/private.h \
 
 kfx_LDADD   = $(LIBS) \
               $(VMI_LIBS) \
-              $(CAPSTONE_LIBS)
+              $(CAPSTONE_LIBS) \
+              $(GLIB_LIBS) \
+              $(JANSSON_LIBS)
 kfx_CFLAGS  = -Wall -Wextra -fstack-protector \
               $(CFLAGS) \
               $(VMI_CFLAGS) \
-              $(CAPSTONE_CFLAGS)
+              $(CAPSTONE_CFLAGS) \
+              $(GLIB_CFLAGS) \
+              $(JANSSON_CFLAGS)
 
 forkvm_SOURCES = src/forkvm_main.c src/forkvm.c src/forkvm.h
 

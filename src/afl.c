@@ -18,7 +18,6 @@ extern unsigned char* input;
 #define SHM_ENV_VAR         "__AFL_SHM_ID"
 
 static unsigned char *afl_area_ptr;
-static unsigned char *afl_oracle_area_ptr;
 static unsigned int afl_inst_rms = MAP_SIZE;
 static char *id_str;
 
@@ -30,7 +29,7 @@ void afl_rewind(unsigned long start)
     return;
 }
 
-unsigned char afl_instrument_location(unsigned long cur_loc, uint64_t from)
+void afl_instrument_location(unsigned long cur_loc, uint64_t from)
 {
     cur_loc  = (cur_loc >> 4) ^ (cur_loc << 8);
     cur_loc &= MAP_SIZE - 1;
@@ -43,15 +42,10 @@ unsigned char afl_instrument_location(unsigned long cur_loc, uint64_t from)
     //printf("Cur loc: %lx Prev loc: %lx\n", cur_loc, prev_loc);
     if ( !id_str )
     {
-        return 255;
+        return;
     }
  
     afl_area_ptr[cur_loc ^ prev_loc]++;
-
-    // Can't read proper values from shared memory
-    afl_oracle_area_ptr[cur_loc ^ prev_loc]++;
-
-    return afl_oracle_area_ptr[cur_loc ^ prev_loc];
 }
 
 void afl_setup(void) {
@@ -73,9 +67,6 @@ void afl_setup(void) {
     if (id_str) {
         shm_id = atoi(id_str);
         afl_area_ptr = shmat(shm_id, NULL, 0);
-
-        afl_oracle_area_ptr = (unsigned char*) malloc(MAP_SIZE);
-        memset(afl_oracle_area_ptr, 0, MAP_SIZE);
 
         if (afl_area_ptr == (void*)-1) exit(1);
 
