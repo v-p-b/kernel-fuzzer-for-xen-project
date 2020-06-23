@@ -241,6 +241,7 @@ static event_response_t tracer_cb(vmi_instance_t vmi, vmi_event_t *event)
 
     } while(1);
 
+    if ( debug ) printf("Reporting edge to AFL: %lx -> %lx\n", from, event->x86_regs->rip);
     afl_instrument_location(event->x86_regs->rip, from);
 
     if ( VMI_EVENT_SINGLESTEP == event->type )
