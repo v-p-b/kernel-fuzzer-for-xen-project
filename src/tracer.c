@@ -456,7 +456,6 @@ bool setup_trace(vmi_instance_t vmi)
             return false;
     }
 
-    xc_monitor_enable_lbr(xc, forkdomid);
     if ( debug ) printf("Setup trace finished\n");
     return true;
 }

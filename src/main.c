@@ -88,9 +88,11 @@ static bool fuzz_fork(void)
         return false;
     }
 
+    xc_monitor_toggle_lbr(xc, forkdomid, true);
     if ( debug ) printf("Starting fuzz loop\n");
     loop(vmi);
     if ( debug ) printf("Stopping fuzz loop.\n");
+    xc_monitor_toggle_lbr(xc, forkdomid, false);
 
     vmi_pagecache_flush(vmi);
     vmi_v2pcache_flush(vmi, target_pagetable);
