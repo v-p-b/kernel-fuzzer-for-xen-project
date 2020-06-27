@@ -301,11 +301,14 @@ static event_response_t tracer_cb(vmi_instance_t vmi, vmi_event_t *event)
             SrcEdge* data = (SrcEdge*)iterator->data;
             if (data->src == (from & 0xffffffff) /*TODO bitness!*/)
             {
-                data->hitcount++;
                 found = true;
                 if ( debug ) printf("\tSource edge hit count: %d\n", data->hitcount);
             }
-            if (data->hitcount < MAX_HIT_COUNT) filled = false;
+            if (data->hitcount < MAX_HIT_COUNT)
+            {
+                    filled = false;
+                    data->hitcount++;
+            }
             if (!filled && found) break;
         }
 
