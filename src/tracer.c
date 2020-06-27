@@ -311,7 +311,15 @@ static event_response_t tracer_cb(vmi_instance_t vmi, vmi_event_t *event)
             }
             if (!filled && found) break;
         }
-
+        if (!found)
+        {
+            SrcEdge* edge = (SrcEdge*)g_new(SrcEdge, 1);
+            edge->src = from & 0xffffffff;
+            edge->hitcount = 1;
+            src_list = g_list_append(src_list, edge);
+            filled=false;
+        }
+ 
         if (filled){
             if ( debug ) printf("Removing BP at %lx\n", event->x86_regs->rip);
             vmi_write_pa(oracle_vmi, meminfo->oracle_paddr, 1, &(meminfo->backup), NULL);
