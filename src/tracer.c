@@ -47,7 +47,7 @@ bool read_control_flow(void)
         GList* src_list = NULL;
         for (size_t i=0; i < json_array_size(value); i++)
         {
-            SrcEdge* edge = (SrcEdge*)g_new(SrcEdge, 1);
+            SrcEdge* edge = g_new(SrcEdge, 1);
             edge->src = json_integer_value( json_array_get(value, i) );
             edge->hitcount = 0;
             src_list = g_list_append(src_list, edge);
@@ -55,7 +55,7 @@ bool read_control_flow(void)
         g_hash_table_insert(cf_map, (gpointer) addr, src_list);
         if ( debug ) printf("Inserted %d sources for %lx\n", g_list_length(src_list) ,addr);
 
-        MemInfo* meminfo = (MemInfo*)g_new(MemInfo, 1);
+        MemInfo* meminfo = g_new(MemInfo, 1);
         meminfo->oracle_paddr = 0;
         meminfo->target_paddr = 0;
         g_hash_table_insert(meminfo_map, (gpointer) addr, meminfo);
@@ -177,6 +177,40 @@ done:
     return found;
 }
 
+static uint64_t report_to_afl(vmi_event_t *event)
+{
+    /* Fetching LBR */
+    uint32_t count, tos, lbr_loop;
+    uint64_t from, to;
+
+    xc_monitor_get_lbr(xc, forkdomid, event->vcpu_id, ~0, &count, &tos, &from, &to);
+    //printf("\t VM trapped to Xen with INT3 @ 0x%lx\n", event->interrupt_event.gla);
+    //printf("\t LBR size: %u TOS: %u\n", count, tos);
+
+    lbr_loop = tos + 1;
+    do
+    {
+        if ( lbr_loop >= count )
+            lbr_loop = 0;
+
+        xc_monitor_get_lbr(xc, forkdomid, event->vcpu_id, lbr_loop, &count, &tos, &from, &to);
+        if ( debug ) printf("\t LBR %u: 0x%lx -> 0x%lx\n", lbr_loop, from, to);
+        if ( lbr_loop == tos )
+            break;
+
+        lbr_loop++;
+
+    } while(1);
+
+    from &= 0xffffffff; // TODO bitness
+
+    if ( debug ) printf("Reporting edge to AFL: %lx -> %lx\n", from, event->x86_regs->rip);
+    afl_instrument_location(event->x86_regs->rip, from);
+
+    return from;
+       
+}
+
 static event_response_t tracer_cb(vmi_instance_t vmi, vmi_event_t *event)
 {
     if ( debug ) printf("[TRACER %s] 0x%lx. Limit: %lu/%lu\n", traptype[event->type], event->x86_regs->rip, tracer_counter, limit);
@@ -190,6 +224,7 @@ static event_response_t tracer_cb(vmi_instance_t vmi, vmi_event_t *event)
             interrupted = 1;
             crash = 1;
 
+            report_to_afl(event);
             if ( debug ) printf("\t Sink %s! Tracer counter: %lu. Crash: %i.\n", sinks[c], tracer_counter, crash);
 
             if ( VMI_EVENT_INTERRUPT == event->type )
@@ -218,37 +253,12 @@ static event_response_t tracer_cb(vmi_instance_t vmi, vmi_event_t *event)
         return VMI_EVENT_RESPONSE_SET_REGISTERS;
     }
 
-    /* Fetching LBR */
-    uint32_t count, tos, lbr_loop;
-    uint64_t from, to;
-
-    xc_monitor_get_lbr(xc, forkdomid, event->vcpu_id, ~0, &count, &tos, &from, &to);
-    //printf("\t VM trapped to Xen with INT3 @ 0x%lx\n", event->interrupt_event.gla);
-    //printf("\t LBR size: %u TOS: %u\n", count, tos);
-
-    lbr_loop = tos + 1;
-    do
-    {
-        if ( lbr_loop >= count )
-            lbr_loop = 0;
-
-        xc_monitor_get_lbr(xc, forkdomid, event->vcpu_id, lbr_loop, &count, &tos, &from, &to);
-        if ( debug ) printf("\t LBR %u: 0x%lx -> 0x%lx\n", lbr_loop, from, to);
-        if ( lbr_loop == tos )
-            break;
-
-        lbr_loop++;
-
-    } while(1);
-
-    if ( debug ) printf("Reporting edge to AFL: %lx -> %lx\n", from, event->x86_regs->rip);
-    afl_instrument_location(event->x86_regs->rip, from);
-
     if ( VMI_EVENT_SINGLESTEP == event->type )
     {
         return VMI_EVENT_RESPONSE_TOGGLE_SINGLESTEP;
     }
 
+    uint64_t from = report_to_afl(event);
     /*
      * Let's allow the control-flow instruction to execute
      * and catch where it continues using MTF singlestep.
@@ -299,7 +309,7 @@ static event_response_t tracer_cb(vmi_instance_t vmi, vmi_event_t *event)
         for ( iterator = src_list ; iterator ; iterator = iterator->next )
         {
             SrcEdge* data = (SrcEdge*)iterator->data;
-            if (data->src == (from & 0xffffffff) /*TODO bitness!*/)
+            if (data->src == from )
             {
                 found = true;
                 if ( debug ) printf("\tSource edge hit count: %d\n", data->hitcount);
@@ -313,16 +323,23 @@ static event_response_t tracer_cb(vmi_instance_t vmi, vmi_event_t *event)
         }
         if (!found)
         {
-            SrcEdge* edge = (SrcEdge*)g_new(SrcEdge, 1);
-            edge->src = from & 0xffffffff;
+            if ( debug ) printf("Adding unknown edge %lx -> %lx\n", from, event->x86_regs->rip);
+            SrcEdge* edge = g_new(SrcEdge, 1);
+            edge->src = from;
             edge->hitcount = 1;
             src_list = g_list_append(src_list, edge);
+            g_hash_table_replace(cf_map, event->x86_regs->rip, src_list);
             filled=false;
         }
  
         if (filled){
             if ( debug ) printf("Removing BP at %lx\n", event->x86_regs->rip);
             vmi_write_pa(oracle_vmi, meminfo->oracle_paddr, 1, &(meminfo->backup), NULL);
+
+            g_hash_table_remove(cf_map, event->x86_regs->rip);
+            g_list_free_full(src_list, g_free);
+            g_hash_table_remove(meminfo_map, event->x86_regs->rip);
+            g_free(meminfo);
         }
 
         tracer_counter++;
